@@ -1,0 +1,19 @@
+# Dependencies
+node_modules/
+
+# Testing
+coverage/
+
+# Misc
+.DS_Store
+*.log
+npm-debug.log*
+
+# Environment (local dev only)
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# NOTE: build/ is NOT ignored - it's committed for workshop deployment
+# Participants clone the repo and deploy without needing Node.js

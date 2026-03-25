@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+env/
+.eggs/
+*.egg-info/
+*.egg
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# AWS SAM
+.aws-sam/
+samconfig.toml.bak
+
+# Environment files
+.env
+.env.local
+.env.*.local
+*.pem
+
+# Logs
+*.log
+logs/
+
+# Testing
+.coverage
+htmlcov/
+.pytest_cache/
+coverage/
+
+# CDK
+cdk.out/
+.cdk.staging/
+
+# NOTE: frontend/build/ is NOT ignored
+# It contains the pre-built React app for workshop deployment

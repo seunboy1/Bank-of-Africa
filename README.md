@@ -101,6 +101,12 @@ sam build         # Build with Docker (configured in samconfig.toml)
 sam deploy        # Deploy using saved config
 ```
 
+**For development (faster iterations):**
+```bash
+sam sync --stack-name bank-of-africa          # One-time sync
+sam sync --stack-name bank-of-africa --watch  # Auto-sync on file changes
+```
+
 ### Option 3: AWS CDK
 ```bash
 cd cdk
