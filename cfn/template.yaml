@@ -1,0 +1,371 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Bank of Africa — Complete Agentic AI Banking System.
+  One-click deployment: DynamoDB + seed data + S3 + Knowledge Base + Lambda + API Gateway + Frontend hosting.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: bank-of-africa
+  BedrockModelId:
+    Type: String
+    Default: anthropic.claude-3-5-sonnet-20241022-v2:0
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Timeout: 60
+    MemorySize: 256
+    Architectures:
+      - x86_64
+    Environment:
+      Variables:
+        USERS_TABLE: !Ref UsersTable
+        ACCOUNTS_TABLE: !Ref AccountsTable
+        TRANSACTIONS_TABLE: !Ref TransactionsTable
+        REGION: !Ref AWS::Region
+
+Resources:
+
+  # ============================================================
+  # DynamoDB Tables
+  # ============================================================
+  UsersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: boa_users
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: user_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: user_id
+          KeyType: HASH
+
+  AccountsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: boa_accounts
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: account_id
+          AttributeType: S
+        - AttributeName: user_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: account_id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: user_id-index
+          KeySchema:
+            - AttributeName: user_id
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+
+  TransactionsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: boa_transactions
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: account_id
+          AttributeType: S
+        - AttributeName: txn_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: account_id
+          KeyType: HASH
+        - AttributeName: txn_id
+          KeyType: RANGE
+
+  # ============================================================
+  # S3 Buckets
+  # ============================================================
+  HandbookBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "boa-handbook-${AWS::AccountId}"
+
+  FrontendBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "boa-frontend-${AWS::AccountId}"
+      WebsiteConfiguration:
+        IndexDocument: index.html
+        ErrorDocument: index.html
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        BlockPublicPolicy: false
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: false
+
+  FrontendBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref FrontendBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: PublicReadForGetBucketObjects
+            Effect: Allow
+            Principal: "*"
+            Action: s3:GetObject
+            Resource: !Sub "${FrontendBucket.Arn}/*"
+
+  # ============================================================
+  # IAM Roles
+  # ============================================================
+  AgentLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-lambda-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: DynamoDBFullAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                  - dynamodb:BatchWriteItem
+                Resource:
+                  - !GetAtt UsersTable.Arn
+                  - !GetAtt AccountsTable.Arn
+                  - !GetAtt TransactionsTable.Arn
+                  - !Sub "${AccountsTable.Arn}/index/*"
+        - PolicyName: BedrockAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                  - bedrock-agent-runtime:Retrieve
+                  - bedrock-agentcore:InvokeAgentRuntime
+                Resource: "*"
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt HandbookBucket.Arn
+                  - !Sub "${HandbookBucket.Arn}/*"
+
+  # ============================================================
+  # Lambda: Seed Data (runs once on deploy via Custom Resource)
+  # ============================================================
+  SeedDataFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${ProjectName}-seed-data"
+      Handler: seed_handler.handler
+      CodeUri: ../lambda_code/seed/
+      Timeout: 120
+      MemorySize: 512
+      Role: !GetAtt AgentLambdaRole.Arn
+
+  SeedDataTrigger:
+    Type: Custom::SeedData
+    Properties:
+      ServiceToken: !GetAtt SeedDataFunction.Arn
+      # Change this value to force re-seeding
+      Version: "1.0"
+
+  # ============================================================
+  # Lambda: Banking Tool Functions (for the Bedrock Agent)
+  # ============================================================
+  GetUserProfileFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${ProjectName}-get-user-profile"
+      Handler: get_user_profile.handler
+      CodeUri: ../lambda_code/agent_code/
+      Role: !GetAtt AgentLambdaRole.Arn
+
+  ListAccountsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${ProjectName}-list-accounts"
+      Handler: list_accounts.handler
+      CodeUri: ../lambda_code/agent_code/
+      Role: !GetAtt AgentLambdaRole.Arn
+
+  GetBalanceFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${ProjectName}-get-balance"
+      Handler: get_balance.handler
+      CodeUri: ../lambda_code/agent_code/
+      Role: !GetAtt AgentLambdaRole.Arn
+
+  GetTransactionsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${ProjectName}-get-transactions"
+      Handler: get_recent_transactions.handler
+      CodeUri: ../lambda_code/agent_code/
+      Role: !GetAtt AgentLambdaRole.Arn
+
+  TransferFundsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${ProjectName}-transfer-funds"
+      Handler: transfer_funds.handler
+      CodeUri: ../lambda_code/agent_code/
+      Role: !GetAtt AgentLambdaRole.Arn
+
+  DepositWithdrawFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${ProjectName}-deposit-withdraw"
+      Handler: deposit_withdraw.handler
+      CodeUri: ../lambda_code/agent_code/
+      Role: !GetAtt AgentLambdaRole.Arn
+
+  # ============================================================
+  # Lambda: API Handler (React frontend → Bedrock)
+  # ============================================================
+  ApiHandlerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${ProjectName}-api-handler"
+      Handler: api_handler.handler
+      CodeUri: ../lambda_code/api/
+      Timeout: 120
+      MemorySize: 512
+      Role: !GetAtt AgentLambdaRole.Arn
+      Environment:
+        Variables:
+          BEDROCK_MODEL_ID: !Ref BedrockModelId
+      Events:
+        ChatPost:
+          Type: Api
+          Properties:
+            Path: /chat
+            Method: POST
+            RestApiId: !Ref BoaApi
+        ChatOptions:
+          Type: Api
+          Properties:
+            Path: /chat
+            Method: OPTIONS
+            RestApiId: !Ref BoaApi
+
+  # ============================================================
+  # API Gateway
+  # ============================================================
+  BoaApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub "${ProjectName}-api"
+      StageName: prod
+      Cors:
+        AllowMethods: "'POST,OPTIONS'"
+        AllowHeaders: "'Content-Type,Authorization'"
+        AllowOrigin: "'*'"
+
+  # ============================================================
+  # Lambda Permissions for Bedrock Agent
+  # ============================================================
+  GetUserProfilePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref GetUserProfileFunction
+      Action: lambda:InvokeFunction
+      Principal: bedrock.amazonaws.com
+
+  ListAccountsPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ListAccountsFunction
+      Action: lambda:InvokeFunction
+      Principal: bedrock.amazonaws.com
+
+  GetBalancePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref GetBalanceFunction
+      Action: lambda:InvokeFunction
+      Principal: bedrock.amazonaws.com
+
+  GetTransactionsPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref GetTransactionsFunction
+      Action: lambda:InvokeFunction
+      Principal: bedrock.amazonaws.com
+
+  TransferFundsPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref TransferFundsFunction
+      Action: lambda:InvokeFunction
+      Principal: bedrock.amazonaws.com
+
+  DepositWithdrawPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref DepositWithdrawFunction
+      Action: lambda:InvokeFunction
+      Principal: bedrock.amazonaws.com
+
+# ============================================================
+# Outputs — What participants see after deploy
+# ============================================================
+Outputs:
+  ApiEndpoint:
+    Description: "API Gateway endpoint — use this if building your own frontend"
+    Value: !Sub "https://${BoaApi}.execute-api.${AWS::Region}.amazonaws.com/prod"
+
+  FrontendURL:
+    Description: "🌐 OPEN THIS — Bank of Africa Chat App"
+    Value: !Sub "http://${FrontendBucket}.s3-website-${AWS::Region}.amazonaws.com"
+
+  FrontendBucket:
+    Description: "S3 bucket for frontend files"
+    Value: !Ref FrontendBucket
+
+  HandbookBucket:
+    Description: "S3 bucket containing bank handbook for Knowledge Base"
+    Value: !Ref HandbookBucket
+
+  UsersTableName:
+    Value: !Ref UsersTable
+  AccountsTableName:
+    Value: !Ref AccountsTable
+  TransactionsTableName:
+    Value: !Ref TransactionsTable
+
+  GetUserProfileArn:
+    Value: !GetAtt GetUserProfileFunction.Arn
+  ListAccountsArn:
+    Value: !GetAtt ListAccountsFunction.Arn
+  GetBalanceArn:
+    Value: !GetAtt GetBalanceFunction.Arn
+  GetTransactionsArn:
+    Value: !GetAtt GetTransactionsFunction.Arn
+  TransferFundsArn:
+    Value: !GetAtt TransferFundsFunction.Arn
+  DepositWithdrawArn:
+    Value: !GetAtt DepositWithdrawFunction.Arn

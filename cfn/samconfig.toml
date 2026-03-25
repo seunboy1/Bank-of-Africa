@@ -1,0 +1,19 @@
+version = 0.1
+
+[default.build.parameters]
+cached = true
+parallel = true
+use_container = true
+
+[default.deploy.parameters]
+stack_name = "bank-of-africa"
+resolve_s3 = true
+s3_prefix = "bank-of-africa"
+region = "us-east-1"
+profile = "Oluwaseun"
+confirm_changeset = true
+capabilities = "CAPABILITY_IAM CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND"
+parameter_overrides = "ProjectName=\"bank-of-africa\""
+
+[default.validate.parameters]
+lint = true
